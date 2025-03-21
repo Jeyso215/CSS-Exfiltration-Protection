@@ -1,6 +1,23 @@
 // Set up message listener for background.js
 // Due to Chrome 85 changes, cross domain CSS requests 
 // need to be handled in background.js
+
+const BASE64_REGEX = /url\(\s*(["']?)\s*data:\w+\/\w+;base64,/i;
+const VAR_REGEX = /var\((--[a-z0-9-]+)(?:\s*,\s*[^)]+)?\)/gi;
+const VALUE_REGEX = /\[value\s*[\^$*~|]?=\s*(["']?)[^\]]+\1\]/i;
+
+function extractNestedRules(rules) {
+    const allRules = [];
+    for (const rule of rules) {
+        if (rule.cssRules) {
+            allRules.push(...extractNestedRules(rule.cssRules));
+        } else {
+            allRules.push(rule);
+        }
+    }
+    return allRules;
+}
+
 chrome.runtime.onMessage.addListener(function(response) {
 	//console.log(response);
 
@@ -204,70 +221,89 @@ function getCSSRules(_sheet)
 }
 
 
-function parseCSSRules(rules)
-{
-	var selectors   = [];
-	var selectorcss = [];
+function parseCSSRules(rules) {
+    const selectors = [];
+    const selectorcss = [];
 
-    if(rules != null)
-    {
-        // Loop through all selectors and determine if any are looking for the value attribute and calling a remote URL
-        for (r=0; r < rules.length; r++) 
-        {
-            var selectorText = null;
-            if(rules[r].selectorText != null)
-            {
-                selectorText = rules[r].selectorText.toLowerCase();
-            }
-
-            var cssText = null;
-            if(rules[r].cssText != null)
-            {
-                cssText = rules[r].cssText.toLowerCase();
-            }
-
-            // If CSS selector is parsing text and is loading a remote resource add to our blocking queue
-            // Flag rules that:
-            // 1) Match a value attribute selector which appears to be parsing text 
-            // 2) Calls a remote URL (https, http, //)
-            // 3) The URL is not an xmlns property
-            // 4) If the URL is called by //, exclude base64 encoded data
-            if( 
-                ( (selectorText != null) && (cssText != null) && 
-                  (selectorText.indexOf('value') !== -1) && (selectorText.indexOf('=') !== -1) ) &&
-                ( (cssText.indexOf('url') !== -1) && 
-                    ( 
-                        (cssText.indexOf('https://') !== -1) || 
-                        (cssText.indexOf('http://') !== -1)  || 
-                        ( (cssText.indexOf('//') !== -1) && (cssText.indexOf(";base64,") === -1) )
-                    ) && 
-                    (cssText.indexOf("xmlns='http://") === -1)
-                )
-              )
-            {
-                selectors.push(rules[r].selectorText);
-                selectorcss.push(cssText);
-            }
-
+    function processRule(rule) {
+        if (rule.cssRules) {
+            Array.from(rule.cssRules).forEach(processRule);
+            return;
         }
 
-    }
+        const selector = rule.selectorText?.toLowerCase() || '';
+        let css = rule.cssText?.toLowerCase() || '';
 
-    // Check if any bad rules were found
-    // if yes, temporarily disable stylesheet
-    if (selectors[0] != null) 
-    {
-        //console.log("Found potentially malicious selectors!");
-        if(rules[0] != null)
+        // Deep resolve CSS variables
+        let resolvedCSS = css;
+        do {
+            resolvedCSS = resolvedCSS.replace(VAR_REGEX, (_, varName) => 
+                getComputedStyle(document.documentElement)
+                    .getPropertyValue(varName)
+                    .trim() || ''
+            );
+        } while (VAR_REGEX.test(resolvedCSS));
+
+        // Detect base64 with enhanced regex
+        const hasBase64 = BASE64_REGEX.test(resolvedCSS);
+
+        // Expanded attribute selector check
+        const isExfilSelector = VALUE_REGEX.test(selector) && 
+            (selector.includes('input') || selector.includes('[value'));
+
+        if (isExfilSelector && 
+            resolvedCSS.includes('url(') && 
+            !hasBase64 &&
+            (resolvedCSS.includes('http://') || 
+             resolvedCSS.includes('https://') || 
+             resolvedCSS.includes('//'))) 
         {
-            disableCSS(rules[0].parentStyleSheet);
+            selectors.push(rule.selectorText);
+            selectorcss.push(resolvedCSS);
         }
     }
-    
 
-    return [selectors,selectorcss];
+    try {
+        Array.from(rules).forEach(processRule);
+    } catch(e) {
+        console.error('CSS processing error:', e);
+    }
+
+    if (selectors.length > 0 && rules[0]?.parentStyleSheet) {
+        disableCSS(rules[0].parentStyleSheet);
+    }
+
+    return [selectors, selectorcss];
 }
 
+// Enable the mutation observer in the DOMContentLoaded event
+window.addEventListener("DOMContentLoaded", function() {
+    // ... existing code ...
+
+    if(DOMAIN_SETTINGS_CURRENT == DOMAIN_SETTINGS_DEFAULT) {
+        // Start observing for dynamic CSS changes
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['style', 'rel']
+        });
+    }
+});
+
+// helper functions for CSS variable resolution
+function resolveCSSVariables(cssText) {
+    const varRegex = /var\((--[a-z0-9-]+)\)/gi;
+    return cssText.replace(varRegex, (match, variable) => {
+        return getCSSVariableValue(variable) || match;
+    });
+}
+
+function getCSSVariableValue(variableName) {
+    return getComputedStyle(document.documentElement)
+        .getPropertyValue(variableName)
+        .trim();
+}
 
 
 
@@ -937,7 +973,3 @@ window.addEventListener("load", function() {
     });
 
 }, false);
-
-
-
-
