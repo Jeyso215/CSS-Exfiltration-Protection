@@ -4,17 +4,23 @@
 
 const BASE64_REGEX = /url\(\s*(["']?)\s*data:\w+\/\w+;base64,/i;
 const VAR_REGEX = /var\((--[a-z0-9-]+)(?:\s*,\s*[^)]+)?\)/gi;
-const VALUE_REGEX = /\[value\s*[\^$*~|]?=\s*(["']?)[^\]]+\1\]/i;
+const VALUE_REGEX = /\[(value|name|id|class)\s*[\^$*~|]?=\s*(["']?)[^\]]+\2\]/i;
 
 function extractNestedRules(rules) {
     const allRules = [];
-    for (const rule of rules) {
-        if (rule.cssRules) {
-            allRules.push(...extractNestedRules(rule.cssRules));
+    const process = (rule) => {
+        if(rule.cssRules && [
+            CSSRule.SUPPORTS_RULE,
+            CSSRule.MEDIA_RULE,
+            CSSRule.KEYFRAMES_RULE,
+            CSSRule.LAYER_RULE
+        ].includes(rule.type)) {
+            Array.from(rule.cssRules).forEach(process);
         } else {
             allRules.push(rule);
         }
-    }
+    };
+    Array.from(rules).forEach(process);
     return allRules;
 }
 
@@ -237,11 +243,11 @@ function parseCSSRules(rules) {
         // Deep resolve CSS variables
         let resolvedCSS = css;
         do {
-            resolvedCSS = resolvedCSS.replace(VAR_REGEX, (_, varName) => 
-                getComputedStyle(document.documentElement)
-                    .getPropertyValue(varName)
-                    .trim() || ''
-            );
+            resolvedCSS = resolvedCSS.replace(VAR_REGEX, (_, varName, fallback) => {
+    const value = getComputedStyle(document.documentElement)
+        .getPropertyValue(varName).trim();
+    return value || fallback?.trim() || '';
+});
         } while (VAR_REGEX.test(resolvedCSS));
 
         // Detect base64 with enhanced regex
