@@ -1,17 +1,18 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
  
   "name": "CSS Exfil Protection",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Guard against CSS data exfiltration attacks.",
 
-  "content_security_policy": "script-src 'self'; object-src 'self'; style-src 'self'",
+  "content_security_policy": "script-src 'none'; object-src 'none'; style-src 'none'",
 
   "permissions": [
     "http://*/",
     "https://*/",
     "storage",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
 
   "homepage_url": "https://www.mike-gualtieri.com/css-exfil-vulnerability-tester",
