@@ -11,8 +11,7 @@
     "http://*/",
     "https://*/",
     "storage",
-    "tabs",
-    "scripting"
+    "tabs"
   ],
 
   "homepage_url": "https://www.mike-gualtieri.com/css-exfil-vulnerability-tester",
