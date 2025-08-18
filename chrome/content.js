@@ -2,7 +2,7 @@
 // Due to Chrome 85 changes, cross domain CSS requests 
 // need to be handled in background.js
 
-const BASE64_REGEX = /url\(\s*(["']?)\s*data:\w+\/\w+;base64,/i;
+const BASE64_REGEX = /url\(\s*["']?data:\w+\/\w+\s*;\s*base64\s*,/i;
 const VAR_REGEX = /var\((--[a-z0-9-]+)(?:\s*,\s*[^)]+)?\)/gi;
 const VALUE_REGEX = /\[(value|name|id|class)\s*[\^$*~|]?=\s*(["']?)[^\]]+\2\]/i;
 
@@ -230,47 +230,127 @@ function getCSSRules(_sheet)
 function parseCSSRules(rules) {
     const selectors = [];
     const selectorcss = [];
+    const globalVariables = new Map();
 
-    function processRule(rule) {
+    // FIRST PASS: Collect ALL variable definitions
+    function collectVariables(rule, currentVars = globalVariables) {
         if (rule.cssRules) {
-            Array.from(rule.cssRules).forEach(processRule);
+            if ([CSSRule.SUPPORTS_RULE, CSSRule.MEDIA_RULE, 
+                 CSSRule.KEYFRAMES_RULE, CSSRule.LAYER_RULE].includes(rule.type)) {
+
+                const nestedVars = new Map(currentVars);
+
+                // Collect variables within this nested rule
+                Array.from(rule.cssRules).forEach(r => {
+                    if (r.type === CSSRule.STYLE_RULE) {
+                        const css = r.cssText || '';
+                        const varMatches = css.match(/--[\w-]+\s*:\s*([^;]+);/g) || [];
+                        varMatches.forEach(match => {
+                            const [name, value] = match.split(':').map(s => s.trim());
+                            nestedVars.set(name, value);
+                        });
+                    }
+                });
+
+                // Process nested rules with new scope
+                Array.from(rule.cssRules).forEach(r => 
+                    collectVariables(r, nestedVars)
+                );
+                return;
+            }
+            Array.from(rule.cssRules).forEach(r => 
+                collectVariables(r, currentVars)
+            );
             return;
         }
 
-        const selector = rule.selectorText?.toLowerCase() || '';
-        let css = rule.cssText?.toLowerCase() || '';
+        if (rule.type === CSSRule.STYLE_RULE) {
+            const css = rule.cssText || '';
+            const varMatches = css.match(/--[\w-]+\s*:\s*([^;]+);/g) || [];
+            varMatches.forEach(match => {
+                const [name, value] = match.split(':').map(s => s.trim());
+                currentVars.set(name, value);
+            });
+        }
+    }
 
-        // Deep resolve CSS variables
-        let resolvedCSS = css;
-        do {
-            resolvedCSS = resolvedCSS.replace(VAR_REGEX, (_, varName, fallback) => {
-    const value = getComputedStyle(document.documentElement)
-        .getPropertyValue(varName).trim();
-    return value || fallback?.trim() || '';
-});
-        } while (VAR_REGEX.test(resolvedCSS));
+    // SECOND PASS: Process rules with resolved variables
+    function processRule(rule, currentVars = globalVariables) {
+        if (rule.cssRules) {
+            if ([CSSRule.SUPPORTS_RULE, CSSRule.MEDIA_RULE, 
+                 CSSRule.KEYFRAMES_RULE, CSSRule.LAYER_RULE].includes(rule.type)) {
 
-        // Detect base64 with enhanced regex
-        const hasBase64 = BASE64_REGEX.test(resolvedCSS);
+                const nestedVars = new Map(currentVars);
 
-        // Expanded attribute selector check
-        const isExfilSelector = VALUE_REGEX.test(selector) && 
-            (selector.includes('input') || selector.includes('[value'));
+                // Collect variables in this scope
+                Array.from(rule.cssRules).forEach(r => {
+                    if (r.type === CSSRule.STYLE_RULE) {
+                        const css = r.cssText || '';
+                        const varMatches = css.match(/--[\w-]+\s*:\s*([^;]+);/g) || [];
+                        varMatches.forEach(match => {
+                            const [name, value] = match.split(':').map(s => s.trim());
+                            nestedVars.set(name, value);
+                        });
+                    }
+                });
 
-        if (isExfilSelector && 
-            resolvedCSS.includes('url(') && 
-            !hasBase64 &&
-            (resolvedCSS.includes('http://') || 
-             resolvedCSS.includes('https://') || 
-             resolvedCSS.includes('//'))) 
-        {
-            selectors.push(rule.selectorText);
-            selectorcss.push(resolvedCSS);
+                // Process nested rules with new scope
+                Array.from(rule.cssRules).forEach(r => 
+                    processRule(r, nestedVars)
+                );
+                return;
+            }
+            Array.from(rule.cssRules).forEach(r => 
+                processRule(r, currentVars)
+            );
+            return;
+        }
+
+        if (rule.type === CSSRule.STYLE_RULE) {
+            const selector = rule.selectorText || '';
+            let css = rule.cssText || '';
+
+            // Resolve variables with fallback support
+            let resolvedCSS = css;
+            let maxIterations = 10;
+            while (maxIterations-- > 0) {
+                const original = resolvedCSS;
+                resolvedCSS = resolvedCSS.replace(
+                    /var\((--[a-z0-9-]+)(?:\s*,\s*([^)]+))?\)/g, 
+                    (_, varName, fallback) => {
+                        return currentVars.has(varName) ? 
+                            currentVars.get(varName) : 
+                            (fallback || '');
+                    }
+                );
+                if (original === resolvedCSS) break;
+            }
+
+            const hasAttr = /url\([^)]*attr\([^)]*\)[^)]*\)/.test(resolvedCSS);
+            const isExfilSelector = VALUE_REGEX.test(selector) && 
+                (selector.includes('input') || selector.includes('[value'));
+
+            // CORRECTED: Fixed syntax error here (extra parenthesis removed)
+            if ((isExfilSelector || hasAttr) && 
+                !BASE64_REGEX.test(resolvedCSS) &&
+                (resolvedCSS.includes('url(http://') || 
+                 resolvedCSS.includes('url(https://)') || 
+                 resolvedCSS.includes('url(//)'))) {
+
+                selectors.push(selector);
+                selectorcss.push(resolvedCSS);
+            }
         }
     }
 
     try {
-        Array.from(rules).forEach(processRule);
+        Array.from(rules).forEach(rule => 
+            collectVariables(rule, globalVariables)
+        );
+
+        Array.from(rules).forEach(rule => 
+            processRule(rule, globalVariables)
+        );
     } catch(e) {
         console.error('CSS processing error:', e);
     }
@@ -279,8 +359,13 @@ function parseCSSRules(rules) {
         disableCSS(rules[0].parentStyleSheet);
     }
 
+    // CORRECT: Send as string (NOT as object)
+    chrome.runtime.sendMessage(block_count.toString());
+
     return [selectors, selectorcss];
 }
+
+
 
 // Enable the mutation observer in the DOMContentLoaded event
 window.addEventListener("DOMContentLoaded", function() {
@@ -616,38 +701,31 @@ function handleCrossDomainCSS(url, xhr_responseText)
 
 
 
-function filter_css(selectors, selectorcss)
-{
-    // Loop through found selectors and modify CSS if necessary
-    for(s in selectors)
-    {
-        if(DOMAIN_SETTINGS_CURRENT == DOMAIN_SETTINGS_DEFAULT)
-		{
-        	if( selectorcss[s].indexOf('background') !== -1 )
-        	{
-        	    filter_sheet.sheet.insertRule( selectors[s] +" { background-image:none !important; }", filter_sheet.sheet.cssRules.length);
-        	}
-        	if( selectorcss[s].indexOf('list-style') !== -1 )
-        	{
-        	    filter_sheet.sheet.insertRule( selectors[s] +" { list-style: inherit !important; }", filter_sheet.sheet.cssRules.length);
-        	}
-        	if( selectorcss[s].indexOf('cursor') !== -1 )
-        	{
-        	    filter_sheet.sheet.insertRule( selectors[s] +" { cursor: auto !important; }", filter_sheet.sheet.cssRules.length);
-        	}
-        	if( selectorcss[s].indexOf('content') !== -1 )
-        	{
-        	    filter_sheet.sheet.insertRule( selectors[s] +" { content: normal !important; }", filter_sheet.sheet.cssRules.length);
-        	}
-		}
-        // Causes performance issue if large amounts of resources are blocked, just use when debugging
-        //console.log("CSS Exfil Protection blocked: "+ selectors[s]);
 
-        // Update background.js with bagde count
+
+function filter_css(selectors, selectorcss) {
+    for(s in selectors) {
+        if(DOMAIN_SETTINGS_CURRENT == DOMAIN_SETTINGS_DEFAULT) {
+            if(selectorcss[s].indexOf('background') !== -1) {
+                filter_sheet.sheet.insertRule(selectors[s] + " { background-image:none !important; }", filter_sheet.sheet.cssRules.length);
+            }
+            if(selectorcss[s].indexOf('list-style') !== -1) {
+                filter_sheet.sheet.insertRule(selectors[s] + " { list-style: inherit !important; }", filter_sheet.sheet.cssRules.length);
+            }
+            if(selectorcss[s].indexOf('cursor') !== -1) {
+                filter_sheet.sheet.insertRule(selectors[s] + " { cursor: auto !important; }", filter_sheet.sheet.cssRules.length);
+            }
+            if(selectorcss[s].indexOf('content') !== -1) {
+                filter_sheet.sheet.insertRule(selectors[s] + " { content: normal !important; }", filter_sheet.sheet.cssRules.length);
+            }
+        }
         block_count++;
     }
-    chrome.extension.sendMessage(block_count.toString());
+
+    // CORRECT: Send as string (NOT as object)
+    chrome.runtime.sendMessage(block_count.toString());
 }
+
 
 
 
@@ -691,15 +769,15 @@ function incrementSanitize()
     sanitize_inc++;
     //console.log("Increment: "+ sanitize_inc);
 }
-function decrementSanitize()
-{
+
+function decrementSanitize() {
     sanitize_inc--;
-    if(sanitize_inc <= 0)
-    {
+    // FIX: Add null check for css_load_blocker
+    if(sanitize_inc <= 0 && css_load_blocker !== null) {
         disableAndRemoveCSS(css_load_blocker);
     }
-    //console.log("Decrement: "+ sanitize_inc);
 }
+
 
 function buildContentLoadBlockerCSS()
 {
