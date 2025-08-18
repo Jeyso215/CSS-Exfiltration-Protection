@@ -29,6 +29,6 @@ If reporting bugs please include the steps to replicate.  Useful information inc
 
 ### Credits
 
-[mlgualtieri](https://github.com/mlgualtieri) - Original Developer
-[Jeyso215](https://github.com/Jeyso215) - New maintainer
-[randshell](https://github.com/randshell) - Vulnerability disclosure
+- [mlgualtieri](https://github.com/mlgualtieri) - Original Developer
+- [Jeyso215](https://github.com/Jeyso215) - New maintainer
+- [randshell](https://github.com/randshell) - Vulnerability disclosure
