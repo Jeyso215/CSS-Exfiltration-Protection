@@ -5,7 +5,7 @@
   "version": "1.1.1",
   "description": "Guard against CSS data exfiltration attacks.",
 
-  "content_security_policy": "script-src 'none'; object-src 'none'; style-src 'none'",
+  "content_security_policy": "script-src 'self'; object-src 'self'; style-src 'self'",
 
   "permissions": [
     "http://*/",
