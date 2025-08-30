@@ -279,6 +279,16 @@ function parseCSSRules(rules) {
         if (rule.cssRules) {
             if ([CSSRule.SUPPORTS_RULE, CSSRule.MEDIA_RULE, 
                  CSSRule.KEYFRAMES_RULE, CSSRule.LAYER_RULE].includes(rule.type)) {
+                 
+                 // Check @supports condition for malicious patterns
+            if (rule.type === CSSRule.SUPPORTS_RULE) {
+                const condition = rule.conditionText || '';
+                if (condition.includes('attr(') || VALUE_REGEX.test(condition)) {
+                    const conditionSelector = `@supports ${condition}`;
+                    selectors.push(conditionSelector);
+                    selectorcss.push(rule.cssText || '');
+                }
+            }
 
                 const nestedVars = new Map(currentVars);
 
@@ -327,14 +337,15 @@ function parseCSSRules(rules) {
             }
 
             const hasAttr = /url\([^)]*attr\([^)]*\)[^)]*\)/.test(resolvedCSS);
-            const isExfilSelector = VALUE_REGEX.test(selector) && 
-                (selector.includes('input') || selector.includes('[value'));
+            const isExfilSelector = VALUE_REGEX.test(selector) || 
+            (resolvedCSS.includes('attr(') && 
+            (selector.includes('[') || resolvedCSS.includes('url(')));
 
             // CORRECTED: Fixed syntax error here (extra parenthesis removed)
             if ((isExfilSelector || hasAttr) && 
                 !BASE64_REGEX.test(resolvedCSS) &&
                 (resolvedCSS.includes('url(http://') || 
-                 resolvedCSS.includes('url(https://)') || 
+                 resolvedCSS.includes('url(https://') || 
                  resolvedCSS.includes('url(//)'))) {
 
                 selectors.push(selector);
@@ -723,7 +734,7 @@ function filter_css(selectors, selectorcss) {
     }
 
     // CORRECT: Send as string (NOT as object)
-    chrome.runtime.sendMessage(block_count.toString());
+    chrome.extension.sendMessage(block_count.toString());
 }
 
 
